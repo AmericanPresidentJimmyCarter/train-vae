@@ -85,12 +85,12 @@ def encode_img(vae, input_img, max_size=512, is_pil=False):
         input_img = input_img.unsqueeze(0)
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         latent = vae.encode(input_img) # Note scaling
-    return 0.18215 * latent.latent_dist.sample(), output_img
+    return vae.config.scaling_factor * latent.latent_dist.sample(), output_img
 
 
 def decode_img(vae, latents, return_pil=False):
     # bath of latents -> list of images
-    latents = (1 / 0.18215) * latents
+    latents = (1 / vae.config.scaling_factor) * latents
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         image = vae.decode(latents.to('cuda')).sample
     image = (image / 2 + 0.5).clamp(0, 1)
