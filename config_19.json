@@ -1,7 +1,7 @@
 {
     "_class_name": "AutoencoderKL",
     "_diffusers_version": "0.20.0.dev0",
-    "_name_or_path": "../sdxl-vae/",
+    "_name_or_path": "../vae/",
     "act_fn": "mish",
     "block_out_channels": [
       128,

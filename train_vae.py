@@ -61,7 +61,7 @@ train_transforms = lambda resolution: transforms.Compose(
 ff_featurizer = FourierFeatures()
 
 
-def train_feature_extract(img, resolution, return_img=False):
+def train_feature_extract(img, resolution, return_img=False, uses_ff=False):
     img = resize_to_min_size_pil(img, resolution)
 
     if return_img:
@@ -69,17 +69,23 @@ def train_feature_extract(img, resolution, return_img=False):
         img_tens = transform_from_pil(img)
     else:
         img_tens = train_transforms(resolution)(img)
-    ff_features = ff_featurizer(img_tens)
+
+    if uses_ff:
+        ff_features = ff_featurizer(img_tens)
+        if return_img:
+            return torch.cat([img_tens, ff_features], dim=0), img
+        return torch.cat([img_tens, ff_features], dim=0)
 
     if return_img:
-        return torch.cat([img_tens, ff_features], dim=0), img
-    return torch.cat([img_tens, ff_features], dim=0)
+        return img_tens, img
+    return img_tens
 
 
-def encode_img(vae, input_img, max_size=512, is_pil=False):
+def encode_img(vae, input_img, max_size=512, is_pil=False, uses_ff=False):
     output_img = None
     if is_pil:
-        input_img, output_img = train_feature_extract(input_img, max_size, return_img=True)
+        input_img, output_img = train_feature_extract(input_img, max_size,
+            return_img=True, uses_ff=uses_ff)
         input_img = input_img.to('cuda', dtype=torch.bfloat16)
     if len(input_img.shape)<19:
         input_img = input_img.unsqueeze(0)
@@ -287,6 +293,9 @@ def parse_args():
     )
     parser.add_argument(
         "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes."
+    )
+    parser.add_argument(
+        "--use_fourier_features", action="store_true", help="Whether or not to use Fourier features"
     )
     parser.add_argument(
         "--shadow_model_every",
@@ -644,7 +653,9 @@ def main():
 
     def preprocess(examples):
         images = [image.convert("RGB") for image in examples[image_column]]
-        examples["pixel_values"] = [train_feature_extract(image, args.resolution) for image in images]
+        examples["pixel_values"] = [train_feature_extract(image,
+                args.resolution, uses_ff=args.use_fourier_features)
+            for image in images]
         return examples
 
     with accelerator.main_process_first():
