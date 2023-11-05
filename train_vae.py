@@ -42,19 +42,50 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 transform_from_pil = transforms.Compose([
-    transforms.ToTensor()
+    transforms.ToTensor(),
+    transforms.Normalize([0.5], [0.5]),
 ])
 transform_to_pil = transforms.ToPILImage()
 
 
-def encode_img(vae, input_img, is_pil=False):
+train_transforms = lambda resolution: transforms.Compose(
+    [
+        # transforms.Resize(
+        #     args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+        # ),
+        transforms.RandomCrop(resolution),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ]
+)
+ff_featurizer = FourierFeatures()
+
+
+def train_feature_extract(img, resolution, return_img=False):
+    img = resize_to_min_size_pil(img, resolution)
+
+    if return_img:
+        img = random_crop_to_max_size_pil(img, resolution)
+        img_tens = transform_from_pil(img)
+    else:
+        img_tens = train_transforms(resolution)(img)
+    ff_features = ff_featurizer(img_tens)
+
+    if return_img:
+        return torch.cat([img_tens, ff_features], dim=0), img
+    return torch.cat([img_tens, ff_features], dim=0)
+
+
+def encode_img(vae, input_img, max_size=512, is_pil=False):
+    output_img = None
     if is_pil:
-        input_img = transform_from_pil(input_img).to('cuda', dtype=torch.bfloat16)
-    if len(input_img.shape)<4:
+        input_img, output_img = train_feature_extract(input_img, max_size, return_img=True)
+        input_img = input_img.to('cuda', dtype=torch.bfloat16)
+    if len(input_img.shape)<19:
         input_img = input_img.unsqueeze(0)
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
-        latent = vae.encode(input_img*2 - 1) # Note scaling
-    return 0.18215 * latent.latent_dist.sample()
+        latent = vae.encode(input_img) # Note scaling
+    return 0.18215 * latent.latent_dist.sample(), output_img
 
 
 def decode_img(vae, latents, return_pil=False):
@@ -91,25 +122,29 @@ def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch):
     test_dataloader_iter = iter(test_dataloader)
 
     img_1 = Image.open('test1.jpg')
-    img_1_recon = decode_img(vae, encode_img(vae_model, img_1, is_pil=True))
+    img_1_encoded, img_1 = encode_img(vae_model, img_1, is_pil=True)
+    img_1_recon = decode_img(vae, img_1_encoded)
     images.append(
-        torch.cat([round_down_and_crop(transform_from_pil(img_1).unsqueeze(0).cpu()), img_1_recon.cpu()], axis=0)
+        torch.cat([transform_from_pil(img_1).unsqueeze(0).cpu(), img_1_recon.cpu()], axis=0)
     )
 
     img_2 = Image.open('test2.jpg')
-    img_2_recon = decode_img(vae, encode_img(vae_model, img_2, is_pil=True))
+    img_2_encoded, img_2 = encode_img(vae_model, img_2, is_pil=True)
+    img_2_recon = decode_img(vae, img_2_encoded)
     images.append(
-        torch.cat([round_down_and_crop(transform_from_pil(img_2).unsqueeze(0).cpu()), img_2_recon.cpu()], axis=0)
+        torch.cat([transform_from_pil(img_2).unsqueeze(0).cpu(), img_2_recon.cpu()], axis=0)
     )
 
     for _ in enumerate(range(4)):
-        x = next(test_dataloader_iter)[0]
-        x = x.squeeze(0).to(weight_dtype)
+        x = next(test_dataloader_iter)[0]['image']
+        # x = x.squeeze(0)
+        # x = transform_to_pil(x)
         # reconstructions = vae_model(x).sample
-        reconstructions = decode_img(vae_model, encode_img(vae_model, x))
+        img_encoded, img_crop = encode_img(vae_model, x, is_pil=True)
+        reconstructions = decode_img(vae_model, img_encoded)
 
         images.append(
-            torch.cat([x.cpu(), reconstructions.cpu()], axis=0)
+            torch.cat([transform_from_pil(img_crop).unsqueeze(0).cpu(), reconstructions.cpu()], axis=0)
         )
 
     for tracker in accelerator.trackers:
@@ -157,6 +192,24 @@ def random_crop_to_max_size(tensor, target_size=512):
     tensor_cropped = tensor[:, :, top:bottom, left:right]
 
     return tensor_cropped
+
+
+def random_crop_to_max_size_pil(img, target_size=256):
+    # Make sure the max crop size is not larger than the image
+    crop_size = target_size
+
+    # Generate a random position for the crop box
+    left = random.randint(0, img.size[0] - crop_size)
+    top = random.randint(0, img.size[1] - crop_size)
+
+    # The crop rectangle should be square
+    right = left + crop_size
+    bottom = top + crop_size
+
+    # Crop the image
+    cropped_image = img.crop((left, top, right, bottom))
+
+    return cropped_image
 
 
 def resize_to_min_size_pil(image, min_size):
@@ -581,27 +634,9 @@ def main():
                 f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
             )
 
-    train_transforms = transforms.Compose(
-        [
-            # transforms.Resize(
-            #     args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
-            # ),
-            transforms.RandomCrop(args.resolution),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-    )
-    ff_featurizer = FourierFeatures()
-
-    def train_feature_extract(img):
-        img = resize_to_min_size_pil(img, args.resolution)
-        img_tens = train_transforms(img)
-        ff_features = ff_featurizer(img_tens)
-        return torch.cat([img_tens, ff_features], dim=0)
-
     def preprocess(examples):
         images = [image.convert("RGB") for image in examples[image_column]]
-        examples["pixel_values"] = [train_feature_extract(image) for image in images]
+        examples["pixel_values"] = [train_feature_extract(image, args.resolution) for image in images]
         return examples
 
     with accelerator.main_process_first():
@@ -609,7 +644,7 @@ def main():
         dataset = dataset["train"].train_test_split(test_size=args.test_samples)
         # Set the training transforms
         train_dataset = dataset["train"].with_transform(preprocess)
-        test_dataset = dataset["test"].with_transform(preprocess)
+        test_dataset = dataset["test"]
 
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
@@ -632,7 +667,7 @@ def main():
     )
 
     test_dataloader = torch.utils.data.DataLoader(
-        test_dataset, shuffle=True
+        test_dataset, shuffle=True, batch_size=1, collate_fn=lambda x: x
     )
 
     # lr_scheduler = get_scheduler(
