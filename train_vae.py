@@ -113,57 +113,65 @@ def round_down_and_crop(tensor):
     return tensor_cropped
 
 
+def patch_val_loader(loader):
+        ori_begin_method = loader.begin
+        ori_end_method = loader.end
+        loader.begin = lambda: (ori_begin_method(), ori_end_method())[0]
+        loader.end = lambda: None
+
+
 @torch.no_grad()
 def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
+    vae_model = vae
 
-    vae_model = accelerator.unwrap_model(vae)
-    images = []
-    test_dataloader_iter = iter(test_dataloader)
+    with torch.no_grad():
+        images = []
+        test_dataloader_iter = iter(test_dataloader)
 
-    img_1 = Image.open('test1.jpg')
-    img_1_encoded, img_1 = encode_img(vae_model, img_1, is_pil=True)
-    img_1_recon = decode_img(vae, img_1_encoded)
-    images.append(
-        torch.cat([transform_from_pil(img_1).unsqueeze(0).cpu(), img_1_recon.cpu()], axis=0)
-    )
-
-    img_2 = Image.open('test2.jpg')
-    img_2_encoded, img_2 = encode_img(vae_model, img_2, is_pil=True)
-    img_2_recon = decode_img(vae, img_2_encoded)
-    images.append(
-        torch.cat([transform_from_pil(img_2).unsqueeze(0).cpu(), img_2_recon.cpu()], axis=0)
-    )
-
-    for _ in enumerate(range(4)):
-        x = next(test_dataloader_iter)[0]['image']
-        # x = x.squeeze(0)
-        # x = transform_to_pil(x)
-        # reconstructions = vae_model(x).sample
-        img_encoded, img_crop = encode_img(vae_model, x, is_pil=True)
-        reconstructions = decode_img(vae_model, img_encoded)
-
+        img_1 = Image.open('test1.jpg')
+        img_1_encoded, img_1 = encode_img(vae_model, img_1, is_pil=True)
+        img_1_recon = decode_img(vae_model, img_1_encoded)
         images.append(
-            torch.cat([transform_from_pil(img_crop).unsqueeze(0).cpu(), reconstructions.cpu()], axis=0)
+            torch.cat([transform_from_pil(img_1).unsqueeze(0).cpu(), img_1_recon.cpu()], axis=0)
         )
 
-    for tracker in accelerator.trackers:
-        if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images(
-                "Original (left) / Reconstruction (right)", np_images, epoch
+        img_2 = Image.open('test2.jpg')
+        img_2_encoded, img_2 = encode_img(vae_model, img_2, is_pil=True)
+        img_2_recon = decode_img(vae_model, img_2_encoded)
+        images.append(
+            torch.cat([transform_from_pil(img_2).unsqueeze(0).cpu(), img_2_recon.cpu()], axis=0)
+        )
+
+        for _ in enumerate(range(4)):
+            x = next(test_dataloader_iter)[0]['image']
+            # x = x.squeeze(0)
+            # x = transform_to_pil(x)
+            # reconstructions = vae_model(x).sample
+            img_encoded, img_crop = encode_img(vae_model, x, is_pil=True)
+            reconstructions = decode_img(vae_model, img_encoded)
+
+            images.append(
+                torch.cat([transform_from_pil(img_crop).unsqueeze(0).cpu(), reconstructions.cpu()], axis=0)
             )
-        elif tracker.name == "wandb":
-            tracker.log(
-                {
-                    "Original (left) / Reconstruction (right)": [
-                        wandb.Image(torchvision.utils.make_grid(image))
-                        for _, image in enumerate(images)
-                    ]
-                }
-            )
-        else:
-            logger.warn(f"image logging not implemented for {tracker.gen_images}")
+
+        for tracker in accelerator.trackers:
+            if tracker.name == "tensorboard":
+                np_images = np.stack([np.asarray(img) for img in images])
+                tracker.writer.add_images(
+                    "Original (left) / Reconstruction (right)", np_images, epoch
+                )
+            elif tracker.name == "wandb":
+                tracker.log(
+                    {
+                        "Original (left) / Reconstruction (right)": [
+                            wandb.Image(torchvision.utils.make_grid(image))
+                            for _, image in enumerate(images)
+                        ]
+                    }
+                )
+            else:
+                logger.warn(f"image logging not implemented for {tracker.gen_images}")
 
     del vae_model
     torch.cuda.empty_cache()
@@ -693,10 +701,9 @@ def main():
         vae,
         optimizer,
         train_dataloader,
-        test_dataloader,
         lr_scheduler,
     ) = accelerator.prepare(
-        vae, optimizer, train_dataloader, test_dataloader, lr_scheduler
+        vae, optimizer, train_dataloader, lr_scheduler
     )
 
     weight_dtype = torch.float32
@@ -887,16 +894,23 @@ def main():
                         shadow_model.store(accelerator.unwrap_model(vae))
 
                     if global_step % args.validation_steps == 0:
-                        with torch.no_grad():
+                        try:
                             if args.use_ema:
-                                # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                                ema_vae.store(vae.parameters())
-                                ema_vae.copy_to(vae.parameters())
-
-                            log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch)
-                            if args.use_ema:
+                                ema_vae_temp = AutoencoderKL.from_config('./config.json')
+                                ema_vae.copy_to(ema_vae_temp.parameters())
+                                ema_vae_temp.to(accelerator.device)
                                 # Switch back to the original UNet parameters.
-                                ema_vae.restore(vae.parameters())
+                                log_validation(test_dataloader, ema_vae_temp,
+                                    accelerator, weight_dtype, epoch)
+                                del ema_vae_temp
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                            else:
+                                log_validation(test_dataloader,
+                                    accelerator.unwrap_model(vae), accelerator,
+                                    weight_dtype, epoch)
+                        except RuntimeError as e:
+                            logger.warn(f"Unable to run validation: {str(e)}")
 
                 if global_step % args.checkpointing_steps == 0:
                     if accelerator.is_main_process:
