@@ -836,7 +836,8 @@ def main():
 
                 # https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/autoencoder_kl.py
                 posterior = vae.encode(target).latent_dist
-                z = posterior.mode()
+                # z = posterior.mode()
+                z = posterior.sample()
                 pred = vae.decode(z).sample
 
                 kl_loss = posterior.kl().mean()
