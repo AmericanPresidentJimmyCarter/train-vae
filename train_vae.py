@@ -87,10 +87,12 @@ def encode_img(vae, input_img, max_size=512, is_pil=False, uses_ff=False):
         input_img, output_img = train_feature_extract(input_img, max_size,
             return_img=True, uses_ff=uses_ff)
         input_img = input_img.to('cuda', dtype=torch.bfloat16)
-    if len(input_img.shape)<19:
-        input_img = input_img.unsqueeze(0)
+
+    input_img = input_img.unsqueeze(0)
+    # print('input image shape', input_img.shape)
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         latent = vae.encode(input_img) # Note scaling
+
     return vae.config.scaling_factor * latent.latent_dist.sample(), output_img
 
 
@@ -101,6 +103,7 @@ def decode_img(vae, latents, return_pil=False):
         image = vae.decode(latents.to('cuda')).sample
     image = (image / 2 + 0.5).clamp(0, 1)
     image = image.detach()
+    # print('image out', image.shape)
     if return_pil:
         transform_to_pil(image.squeeze(0))
     return image
@@ -117,13 +120,6 @@ def round_down_and_crop(tensor):
     tensor_cropped = tensor[:, :, :target_h, :target_w]
 
     return tensor_cropped
-
-
-def patch_val_loader(loader):
-        ori_begin_method = loader.begin
-        ori_end_method = loader.end
-        loader.begin = lambda: (ori_begin_method(), ori_end_method())[0]
-        loader.end = lambda: None
 
 
 @torch.no_grad()
@@ -811,11 +807,14 @@ def main():
         last_failed = False
         for step, batch in enumerate(train_dataloader):
             target = batch['pixel_values'].to(weight_dtype)
+            # test1 = transform_to_pil((target[0][:3, :, :]/2)+0.5)
+            # test1.save('img.jpg')
 
             if args.use_discriminator:
                 with torch.no_grad():
                     posterior = vae.encode(target).latent_dist
-                    z = posterior.mode()
+                    # z = posterior.mode()
+                    z = posterior.sample()
                     rec = vae.decode(z).sample
                 with accelerator_d.accumulate(discriminator):
                     real_pred, fake_pred = discriminator(target[:, :3, :, :]), discriminator(rec.detach())
