@@ -266,6 +266,13 @@ def parse_args():
         help="Path to pretrained EMA model or model identifier",
     )
     parser.add_argument(
+        "--config_file",
+        type=str,
+        default=None,
+        required=False,
+        help="Configuration file to use",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -551,7 +558,7 @@ def main():
             args.pretrained_model_name_or_path, revision=args.revision
         )
     else:
-        vae = AutoencoderKL.from_config('./config.json')
+        vae = AutoencoderKL.from_config(args.config_file)
 
     if args.use_ema and args.pretrained_ema_model_name_or_path:
         ema_vae = AutoencoderKL.from_pretrained(
@@ -559,7 +566,7 @@ def main():
         )
         ema_vae = EMAModel(ema_vae.parameters(), model_cls=AutoencoderKL, model_config=ema_vae.config)
     if args.use_ema and not args.pretrained_ema_model_name_or_path:
-        ema_vae = AutoencoderKL.from_config('./config.json')
+        ema_vae = AutoencoderKL.from_config(args.config_file)
         ema_vae_sd = ema_vae.state_dict()
         for name, param in vae.named_parameters():
             ema_vae_sd[name].copy_(param)
@@ -907,7 +914,7 @@ def main():
                     if global_step % args.validation_steps == 0:
                         try:
                             if args.use_ema:
-                                ema_vae_temp = AutoencoderKL.from_config('./config.json')
+                                ema_vae_temp = AutoencoderKL.from_config(args.config_file)
                                 ema_vae.copy_to(ema_vae_temp.parameters())
                                 ema_vae_temp.to(accelerator.device)
                                 # Switch back to the original UNet parameters.
