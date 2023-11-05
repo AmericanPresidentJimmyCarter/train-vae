@@ -1,0 +1,9 @@
+torch
+torchvision
+datasets
+diffusers
+wandb
+accelerate
+lpips
+scipy
+bitsandbytes
