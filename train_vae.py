@@ -127,7 +127,7 @@ def patch_val_loader(loader):
 
 
 @torch.no_grad()
-def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch):
+def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch, uses_ff=False):
     logger.info("Running validation... ")
     vae_model = vae
 
@@ -136,14 +136,14 @@ def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch):
         test_dataloader_iter = iter(test_dataloader)
 
         img_1 = Image.open('test1.jpg')
-        img_1_encoded, img_1 = encode_img(vae_model, img_1, is_pil=True)
+        img_1_encoded, img_1 = encode_img(vae_model, img_1, is_pil=True, uses_ff=uses_ff)
         img_1_recon = decode_img(vae_model, img_1_encoded)
         images.append(
             torch.cat([transform_from_pil(img_1).unsqueeze(0).cpu(), img_1_recon.cpu()], axis=0)
         )
 
         img_2 = Image.open('test2.jpg')
-        img_2_encoded, img_2 = encode_img(vae_model, img_2, is_pil=True)
+        img_2_encoded, img_2 = encode_img(vae_model, img_2, is_pil=True, uses_ff=uses_ff)
         img_2_recon = decode_img(vae_model, img_2_encoded)
         images.append(
             torch.cat([transform_from_pil(img_2).unsqueeze(0).cpu(), img_2_recon.cpu()], axis=0)
@@ -154,7 +154,7 @@ def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch):
             # x = x.squeeze(0)
             # x = transform_to_pil(x)
             # reconstructions = vae_model(x).sample
-            img_encoded, img_crop = encode_img(vae_model, x, is_pil=True)
+            img_encoded, img_crop = encode_img(vae_model, x, is_pil=True, uses_ff=uses_ff)
             reconstructions = decode_img(vae_model, img_encoded)
 
             images.append(
@@ -919,14 +919,16 @@ def main():
                                 ema_vae_temp.to(accelerator.device)
                                 # Switch back to the original UNet parameters.
                                 log_validation(test_dataloader, ema_vae_temp,
-                                    accelerator, weight_dtype, epoch)
+                                    accelerator, weight_dtype, epoch,
+                                    uses_ff=args.use_fourier_features)
                                 del ema_vae_temp
                                 gc.collect()
                                 torch.cuda.empty_cache()
                             else:
                                 log_validation(test_dataloader,
                                     accelerator.unwrap_model(vae), accelerator,
-                                    weight_dtype, epoch)
+                                    weight_dtype, epoch,
+                                    uses_ff=args.use_fourier_features)
                         except RuntimeError as e:
                             logger.warn(f"Unable to run validation: {str(e)}")
 
