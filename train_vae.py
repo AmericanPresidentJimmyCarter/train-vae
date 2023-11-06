@@ -105,7 +105,7 @@ def decode_img(vae, latents, return_pil=False):
     image = image.detach()
     # print('image out', image.shape)
     if return_pil:
-        transform_to_pil(image.squeeze(0))
+        return transform_to_pil(image.squeeze(0))
     return image
 
 
@@ -135,14 +135,14 @@ def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch, uses_
         img_1_encoded, img_1 = encode_img(vae_model, img_1, is_pil=True, uses_ff=uses_ff)
         img_1_recon = decode_img(vae_model, img_1_encoded)
         images.append(
-            torch.cat([transform_from_pil(img_1).unsqueeze(0).cpu(), img_1_recon.cpu()], axis=0)
+            torch.cat([transform_from_pil(img_1).unsqueeze(0).cpu(), (img_1_recon.cpu() * 2) - 1], axis=0)
         )
 
         img_2 = Image.open('test2.jpg')
         img_2_encoded, img_2 = encode_img(vae_model, img_2, is_pil=True, uses_ff=uses_ff)
         img_2_recon = decode_img(vae_model, img_2_encoded)
         images.append(
-            torch.cat([transform_from_pil(img_2).unsqueeze(0).cpu(), img_2_recon.cpu()], axis=0)
+            torch.cat([transform_from_pil(img_2).unsqueeze(0).cpu(), (img_2_recon.cpu() * 2) - 1], axis=0)
         )
 
         for _ in enumerate(range(4)):
@@ -154,7 +154,7 @@ def log_validation(test_dataloader, vae, accelerator, weight_dtype, epoch, uses_
             reconstructions = decode_img(vae_model, img_encoded)
 
             images.append(
-                torch.cat([transform_from_pil(img_crop).unsqueeze(0).cpu(), reconstructions.cpu()], axis=0)
+                torch.cat([transform_from_pil(img_crop).unsqueeze(0).cpu(), (reconstructions.cpu()  * 2) - 1], axis=0)
             )
 
         for tracker in accelerator.trackers:
@@ -558,7 +558,7 @@ def main():
 
     if args.use_ema and args.pretrained_ema_model_name_or_path:
         ema_vae = AutoencoderKL.from_pretrained(
-            args.pretrained_model_name_or_path, revision=args.revision
+            args.pretrained_ema_model_name_or_path, revision=args.revision
         )
         ema_vae = EMAModel(ema_vae.parameters(), model_cls=AutoencoderKL, model_config=ema_vae.config)
     if args.use_ema and not args.pretrained_ema_model_name_or_path:
@@ -566,9 +566,10 @@ def main():
         ema_vae_sd = ema_vae.state_dict()
         for name, param in vae.named_parameters():
             ema_vae_sd[name].copy_(param)
-        ema_vae = EMAModel(ema_vae.parameters(), model_cls=AutoencoderKL, model_config=ema_vae.config)
+        ema_vae = EMAModel(ema_vae.parameters(), model_cls=AutoencoderKL,
+            model_config=ema_vae.config, power=3/4)
 
-    # vae = torch.compile(vae, dynamic=True)
+    vae = torch.compile(vae, dynamic=True)
 
     vae_params = vae.parameters()
 
@@ -609,7 +610,7 @@ def main():
             project_config=accelerator_project_config,
         )
         discriminator = NLayerDiscriminator()
-        optimizer_d = optimizer_class(discriminator.parameters(), lr=1e-3, betas=(0.9, 0.999))
+        optimizer_d = optimizer_class(discriminator.parameters(), lr=3e-4, betas=(0.9, 0.999))
 
         (
             discriminator,
