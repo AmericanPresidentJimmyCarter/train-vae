@@ -35,6 +35,8 @@ from features import FourierFeatures
 from discriminator import NLayerDiscriminator, hinge_d_loss, vanilla_g_loss
 from shadow import ShadowModel
 
+FF_WEIGHTS_LOC = './ff.pt'
+
 if is_wandb_available():
     import wandb
 
@@ -59,6 +61,11 @@ train_transforms = lambda resolution: transforms.Compose(
     ]
 )
 ff_featurizer = FourierFeatures()
+if os.path.exists(FF_WEIGHTS_LOC):
+    ff_weight = torch.load(FF_WEIGHTS_LOC)
+    ff_featurizer.weight.copy_(ff_weight)
+else:
+    torch.save(ff_featurizer.weight, FF_WEIGHTS_LOC)
 
 
 def train_feature_extract(img, resolution, return_img=False, uses_ff=False):
@@ -387,6 +394,12 @@ def parse_args():
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
+        "--learning_rate_discriminator",
+        type=float,
+        default=3e-4,
+        help="Constant learning rate of the discriminator.",
+    )
+    parser.add_argument(
         "--scale_lr",
         action="store_true",
         default=False,
@@ -610,7 +623,8 @@ def main():
             project_config=accelerator_project_config,
         )
         discriminator = NLayerDiscriminator()
-        optimizer_d = optimizer_class(discriminator.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        optimizer_d = optimizer_class(discriminator.parameters(),
+            lr=args.learning_rate_discriminator, betas=(0.9, 0.999))
 
         (
             discriminator,
